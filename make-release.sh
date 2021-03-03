@@ -12,12 +12,14 @@
 
 set -e
 #!/bin/bash	
-QUAY_REPO="quay.io/devfile/devworkspace-controller:${VERSION}"	
+REPO=git@github.com:devfile/devworkspace-operator
 MAIN_BRANCH="main"
+TMP=""
 
 while [[ "$#" -gt 0 ]]; do	
   case $1 in	
     '-v'|'--version') VERSION="$2"; shift 1;;		
+    '-tmp'|'--use-tmp-dir') TMP=$(mktemp -d); shift 0;;
   esac	
   shift 1	
 done	
@@ -77,13 +79,23 @@ else
   BASEBRANCH="${BRANCH}"	
 fi	
 
+# work in tmp dir
+if [[ $TMP ]] && [[ -d $TMP ]]; then
+  pushd "$TMP" > /dev/null || exit 1
+  # get sources from ${BASEBRANCH} branch
+  echo "Check out ${REPO} to ${TMP}/${REPO##*/}"
+  git clone "${REPO}" -q
+  cd "${REPO##*/}" || exit 1
+fi
+
+
 # get sources from ${BASEBRANCH} branch	
-git fetch origin "${BASEBRANCH}":"${BASEBRANCH}"	
+git fetch origin "${BASEBRANCH}":"${BASEBRANCH}" || true
 git checkout "${BASEBRANCH}"	
 
 # create new branch off ${BASEBRANCH} (or check out latest commits if branch already exists), then push to origin
 if [[ "${BASEBRANCH}" != "${BRANCH}" ]]; then
-  git branch "${BRANCH}" || git checkout "${BRANCH}" && git pull origin "${BRANCH}"
+  git branch "${BRANCH}" || git checkout "${BRANCH}" && git pull origin "${BRANCH}" || true
 #   git push origin "${BRANCH}"
   git fetch origin "${BRANCH}:${BRANCH}" || true
   git checkout "${BRANCH}"
@@ -93,20 +105,18 @@ else
 fi
 set -e
 
-
-set -e	
-
 # change VERSION file	
-echo "${VERSION}" > VERSION	
+echo "${VERSION}" > VERSION
 
-git pull origin "${BRANCH}"	
-# git push origin "${BRANCH}"	
-	
+QUAY_REPO="quay.io/devfile/devworkspace-controller:${VERSION}"
 docker build -t "${QUAY_REPO}" -f ./build/Dockerfile .
 #docker push "${QUAY_REPO}"
+
+# replace image version in default environment
 sed -i "s/IMG=quay.io\/devfile\/devworkspace-controller:.*/IMG=quay.io\/devfile\/devworkspace-controller:${VERSION}/" ./deploy/generate-deployment.sh
 
-./deploy/generate-deployment.sh --use-defaults
+set -x
+bash -x ./deploy/generate-deployment.sh --use-defaults
 # tag the release	
 git tag "${VERSION}"	
 #   git push origin "${VERSION}"	
@@ -127,3 +137,10 @@ fi
 [[ $VERSION =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]] && BASE="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"; NEXT="${BASH_REMATCH[3]}"; (( NEXT=NEXT+1 )) # for VERSION=7.7.1, get BASE=7.7, NEXT=2	
 NEXT_VERSION_Z="${BASE}.${NEXT}-SNAPSHOT"	
 bump_version "${NEXT_VERSION_Z}" "${BRANCH}"
+
+popd > /dev/null || exit
+
+# cleanup tmp dir
+if [[ $TMP ]] && [[ -d $TMP ]]; then
+  rm -fr "$TMP"
+fi
